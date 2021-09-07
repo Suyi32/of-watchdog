@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"bufio"
 
 	limiter "github.com/openfaas/faas-middleware/concurrency-limiter"
 	"github.com/openfaas/of-watchdog/config"
@@ -300,6 +301,46 @@ func getEnvironment(r *http.Request) []string {
 	return envs
 }
 
+func readMemo() float32 {
+        var memo_usage_in_bytes float32
+        var cache float32
+
+        file, err := os.Open("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+        if err !=  nil{
+                log.Fatal(err)
+        }
+        defer file.Close()
+        scanner := bufio.NewScanner(file)
+        for scanner.Scan() {
+                _, err := fmt.Sscan(scanner.Text(), &memo_usage_in_bytes)
+                //strconv.ParseFloat(f, 32)
+                if err != nil{
+                        log.Fatal(err)
+                }
+        }
+        if err := scanner.Err(); err != nil{
+                log.Fatal(err)
+        }
+        // fmt.Printf("memo=%f, type: %T\n", memo_usage_in_bytes, memo_usage_in_bytes)
+
+        file, err = os.Open("/sys/fs/cgroup/memory/memory.stat")
+        if err != nil{
+                log.Fatal(err)
+        }
+        defer file.Close()
+        scanner = bufio.NewScanner(file)
+        for scanner.Scan() {
+            split := strings.Split(scanner.Text(), " ")
+            // fmt.Println(split)
+            if split[0] == "cache"{
+                _, err = fmt.Sscan(split[1], &cache)
+            }
+        }
+        // fmt.Printf("cache=%f, type: %T\n", cache, cache)
+
+        return (memo_usage_in_bytes - cache) / 1048576.0
+}
+
 func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool) func(http.ResponseWriter, *http.Request) {
 	commandName, arguments := watchdogConfig.Process()
 	functionInvoker := executor.HTTPFunctionRunner{
@@ -325,6 +366,10 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 
 	return func(w http.ResponseWriter, r *http.Request) {
 
+		stopCh := make(chan bool)
+		var new_memo float32
+		var max_memo float32
+
 		req := executor.FunctionRequest{
 			Process:      commandName,
 			ProcessArgs:  arguments,
@@ -336,13 +381,34 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 			defer r.Body.Close()
 		}
 
-		err := functionInvoker.Run(req, r.ContentLength, r, w)
+		go func(){
+			err := functionInvoker.Run(req, r.ContentLength, r, w, stopCh)
+			if err != nil {
+				w.WriteHeader(500)
+				w.Write([]byte(err.Error()))
+			}
+		}()
+		//err := go functionInvoker.Run(req, r.ContentLength, r, w, stopCh)
 
-		if err != nil {
-			w.WriteHeader(500)
-			w.Write([]byte(err.Error()))
-		}
+		L:
+			for{
+				select{
+				case _ = <-stopCh:
+					break L
+				default:
+					new_memo = readMemo()
+					if new_memo > max_memo {
+						max_memo = new_memo
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
 
+		//if err != nil {
+		//	w.WriteHeader(500)
+		//	w.Write([]byte(err.Error()))
+		//}
+		log.Printf("[MEMO] %f", max_memo)
 	}
 }
 

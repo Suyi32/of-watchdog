@@ -83,7 +83,7 @@ func (f *HTTPFunctionRunner) Start() error {
 }
 
 // Run a function with a long-running process with a HTTP protocol for communication
-func (f *HTTPFunctionRunner) Run(req FunctionRequest, contentLength int64, r *http.Request, w http.ResponseWriter) error {
+func (f *HTTPFunctionRunner) Run(req FunctionRequest, contentLength int64, r *http.Request, w http.ResponseWriter, stopCh chan bool) error {
 	startedTime := time.Now()
 
 	upstreamURL := f.UpstreamURL.String()
@@ -171,7 +171,9 @@ func (f *HTTPFunctionRunner) Run(req FunctionRequest, contentLength int64, r *ht
 		w.Write(bodyBytes)
 	}
 
-	log.Printf("%s %s - %s - ContentLength: %d", r.Method, r.RequestURI, res.Status, res.ContentLength)
+	log.Printf("%s %s - %s - ContentLength: %d durationSec: %f", r.Method, r.RequestURI, res.Status, res.ContentLength, time.Since(startedTime).Seconds())
+
+	stopCh <- true
 
 	return nil
 }
