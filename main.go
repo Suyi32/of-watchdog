@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 	"bufio"
+	"strconv"
 
 	limiter "github.com/openfaas/faas-middleware/concurrency-limiter"
 	"github.com/openfaas/of-watchdog/config"
@@ -341,6 +342,17 @@ func readMemo() float32 {
         return (memo_usage_in_bytes - cache) / 1048576.0
 }
 
+func readCPU() float64 {
+        data, err := ioutil.ReadFile("/sys/fs/cgroup/cpuacct/cpuacct.usage")
+        if err != nil{
+                log.Fatal(err)
+        }
+        cpu_string := strings.TrimSuffix(string(data), "\n")
+        cpu_usage, err := strconv.ParseFloat(cpu_string, 64)
+        //fmt.Println(cpu_usage, err, reflect.TypeOf(cpu_usage))
+        return float64(cpu_usage)
+}
+
 func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool) func(http.ResponseWriter, *http.Request) {
 	commandName, arguments := watchdogConfig.Process()
 	functionInvoker := executor.HTTPFunctionRunner{
@@ -381,6 +393,7 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 			defer r.Body.Close()
 		}
 
+		cpu_start := readCPU()
 		go func(){
 			err := functionInvoker.Run(req, r.ContentLength, r, w, stopCh)
 			if err != nil {
@@ -409,6 +422,7 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 		//	w.Write([]byte(err.Error()))
 		//}
 		log.Printf("[MEMO] %f", max_memo)
+		log.Printf("[CPU] %f", readCPU() - cpu_start)
 	}
 }
 
