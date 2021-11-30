@@ -20,6 +20,7 @@ import (
 	"time"
 	"bufio"
 	"strconv"
+	// "encoding/json"
 
 	limiter "github.com/openfaas/faas-middleware/concurrency-limiter"
 	"github.com/openfaas/of-watchdog/config"
@@ -74,6 +75,7 @@ func main() {
 	httpMetrics := metrics.NewHttp()
 	http.HandleFunc("/", metrics.InstrumentHandler(requestHandler, httpMetrics))
 	http.HandleFunc("/_/health", makeHealthHandler())
+	http.HandleFunc("/_/context", makeContextHandler())
 
 	metricsServer := metrics.MetricsServer{}
 	metricsServer.Register(watchdogConfig.MetricsPort)
@@ -455,6 +457,39 @@ func makeHealthHandler() func(http.ResponseWriter, *http.Request) {
 
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("OK"))
+
+			break
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+// type ContextRes struct {
+// 	Inflight int64
+//     CPU      int64
+//     Memo   	 int64
+// }
+
+func makeContextHandler() func(http.ResponseWriter, *http.Request) {
+	// connections := int64(testutil.ToFloat64(httpMetrics.InFlight))
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			// res_raw := &ContextRes{
+			// 	Inflight: 0,
+			// 	CPU: 1,
+			// 	Memo:2}
+			// res, _ := json.Marshal(res_raw)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			// w.Write([]byte("Context Handler"))
+
+			jsonData := []byte(`{"InFlight": 0, "CPU": 1, "Memo": 2}`)
+			w.Write(jsonData)
+			// json.NewEncoder(w).Encode(res)
 
 			break
 		default:
