@@ -124,6 +124,14 @@ This mode starts an HTTP file server for serving static content found at the dir
 
 See an example in the [Hugo blog post](https://www.openfaas.com/blog/serverless-static-sites/).
 
+## Metrics
+
+| Name                            | Description             | Type                   |
+|---------------------------------|-------------------------|------------------------|
+| http_requests_total             | Total number of requests | Counter               |
+| http_request_duration_seconds   | Duration of requests    | Histogram              |
+| http_requests_in_flight         | Number of requests in-flight | Gauge             |
+
 ## Configuration
 
 Environmental variables:
@@ -136,6 +144,7 @@ Environmental variables:
 | `static_path`               | Yes          | Absolute or relative path to the directory that will be served if `mode="static"` |
 | `read_timeout`              | Yes          | HTTP timeout for reading the payload from the client caller (in seconds) |
 | `write_timeout`             | Yes          | HTTP timeout for writing a response body from your function (in seconds)  |
+| `healthcheck_interval`      | Yes          | Interval (in seconds) for HTTP healthcheck by container orchestrator i.e. kubelet. Used for graceful shutdowns.  |
 | `exec_timeout`              | Yes          | Exec timeout for process exec'd for each incoming request (in seconds). Disabled if set to 0. |
 | `port`                      | Yes          | Specify an alternative TCP port for testing. Default: `8080` |
 | `write_debug`               | No           | Write all output, error messages, and additional information to the logs. Default is `false`. |
@@ -148,6 +157,6 @@ Environmental variables:
 | `max_inflight`              | Yes          | Limit the maximum number of requests in flight |
 | `mode`                      | Yes          | The mode which of-watchdog operates in, Default `streaming` [see doc](#3-streaming-fork-modestreaming---default). Options are [http](#1-http-modehttp), [serialising fork](#2-serializing-fork-modeserializing), [streaming fork](#3-streaming-fork-modestreaming---default), [static](#4-static-modestatic) |
 | `prefix_logs`             | Yes          | When set to `true` the watchdog will add a prefix of "Date Time" + "stderr/stdout" to every line read from the function process. Default `true` |
-
+| `log_buffer_size` | The amount of bytes to read from stderr/stdout for log lines. When exceeded, the user will see an "bufio.Scanner: token too long" error. The default value is `bufio.MaxScanTokenSize` |
 
 > Note: the .lock file is implemented for health-checking, but cannot be disabled yet. You must create this file in /tmp/.

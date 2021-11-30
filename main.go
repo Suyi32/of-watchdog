@@ -26,6 +26,7 @@ import (
 	"github.com/openfaas/of-watchdog/config"
 	"github.com/openfaas/of-watchdog/executor"
 	"github.com/openfaas/of-watchdog/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 var (
@@ -61,10 +62,9 @@ func main() {
 
 	atomic.StoreInt32(&acceptingConnections, 0)
 
-	watchdogConfig := config.New(os.Environ())
-
-	if len(watchdogConfig.FunctionProcess) == 0 && watchdogConfig.OperationalMode != config.ModeStatic {
-		fmt.Fprintf(os.Stderr, "Provide a \"function_process\" or \"fprocess\" environmental variable for your function.\n")
+	watchdogConfig, err := config.New(os.Environ())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s", err.Error())
 		os.Exit(1)
 	}
 
@@ -84,7 +84,6 @@ func main() {
 
 	go metricsServer.Serve(cancel)
 
-	shutdownTimeout := watchdogConfig.HTTPWriteTimeout
 	s := &http.Server{
 		Addr:           fmt.Sprintf(":%d", watchdogConfig.TCPPort),
 		ReadTimeout:    watchdogConfig.HTTPReadTimeout,
@@ -92,14 +91,19 @@ func main() {
 		MaxHeaderBytes: 1 << 20, // Max header of 1MB
 	}
 
-	log.Printf("Timeouts: read: %s, write: %s hard: %s.\n",
+	log.Printf("Timeouts: read: %s write: %s hard: %s health: %s\n",
 		watchdogConfig.HTTPReadTimeout,
 		watchdogConfig.HTTPWriteTimeout,
-		watchdogConfig.ExecTimeout)
+		watchdogConfig.ExecTimeout,
+		watchdogConfig.HealthcheckInterval)
 
 	log.Printf("Listening on port: %d\n", watchdogConfig.TCPPort)
 
-	listenUntilShutdown(shutdownTimeout, s, watchdogConfig.SuppressLock)
+	listenUntilShutdown(s,
+		watchdogConfig.HealthcheckInterval,
+		watchdogConfig.HTTPWriteTimeout,
+		watchdogConfig.SuppressLock,
+		&httpMetrics)
 }
 
 func markUnhealthy() error {
@@ -111,7 +115,7 @@ func markUnhealthy() error {
 	return removeErr
 }
 
-func listenUntilShutdown(shutdownTimeout time.Duration, s *http.Server, suppressLock bool) {
+func listenUntilShutdown(s *http.Server, healthcheckInterval time.Duration, writeTimeout time.Duration, suppressLock bool, httpMetrics *metrics.Http) {
 
 	idleConnsClosed := make(chan struct{})
 	go func() {
@@ -120,24 +124,29 @@ func listenUntilShutdown(shutdownTimeout time.Duration, s *http.Server, suppress
 
 		<-sig
 
-		log.Printf("SIGTERM received.. shutting down server in %s\n", shutdownTimeout.String())
+		log.Printf("SIGTERM: no new connections in %s\n", healthcheckInterval.String())
 
-		healthErr := markUnhealthy()
-
-		if healthErr != nil {
-			log.Printf("Unable to mark unhealthy during shutdown: %s\n", healthErr.Error())
+		if err := markUnhealthy(); err != nil {
+			log.Printf("Unable to mark server as unhealthy: %s\n", err.Error())
 		}
 
-		<-time.Tick(shutdownTimeout)
+		<-time.Tick(healthcheckInterval)
 
-		if err := s.Shutdown(context.Background()); err != nil {
-			// Error from closing listeners, or context timeout:
+		connections := int64(testutil.ToFloat64(httpMetrics.InFlight))
+		log.Printf("No new connections allowed, draining: %d requests\n", connections)
+
+		// The maximum time to wait for active connections whilst shutting down is
+		// equivalent to the maximum execution time i.e. writeTimeout.
+		ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+		defer cancel()
+
+		if err := s.Shutdown(ctx); err != nil {
 			log.Printf("Error in Shutdown: %v", err)
 		}
 
-		log.Printf("No new connections allowed. Exiting in: %s\n", shutdownTimeout.String())
+		connections = int64(testutil.ToFloat64(httpMetrics.InFlight))
 
-		<-time.Tick(shutdownTimeout)
+		log.Printf("Exiting. Active connections: %d\n", connections)
 
 		close(idleConnsClosed)
 	}()
@@ -170,19 +179,15 @@ func buildRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool) 
 
 	switch watchdogConfig.OperationalMode {
 	case config.ModeStreaming:
-		requestHandler = makeForkRequestHandler(watchdogConfig, prefixLogs)
-		break
+		requestHandler = makeForkRequestHandler(watchdogConfig, prefixLogs, watchdogConfig.LogBufferSize)
 	case config.ModeSerializing:
 		requestHandler = makeSerializingForkRequestHandler(watchdogConfig, prefixLogs)
-		break
 	case config.ModeHTTP:
-		requestHandler = makeHTTPRequestHandler(watchdogConfig, prefixLogs)
-		break
+		requestHandler = makeHTTPRequestHandler(watchdogConfig, prefixLogs, watchdogConfig.LogBufferSize)
 	case config.ModeStatic:
 		requestHandler = makeStaticRequestHandler(watchdogConfig)
 	default:
 		log.Panicf("unknown watchdog mode: %d", watchdogConfig.OperationalMode)
-		break
 	}
 
 	if watchdogConfig.MaxInflight > 0 {
@@ -244,10 +249,11 @@ func makeSerializingForkRequestHandler(watchdogConfig config.WatchdogConfig, log
 	}
 }
 
-func makeForkRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool) func(http.ResponseWriter, *http.Request) {
+func makeForkRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool, logBufferSize int) func(http.ResponseWriter, *http.Request) {
 	functionInvoker := executor.ForkFunctionRunner{
-		ExecTimeout: watchdogConfig.ExecTimeout,
-		LogPrefix:   prefixLogs,
+		ExecTimeout:   watchdogConfig.ExecTimeout,
+		LogPrefix:     prefixLogs,
+		LogBufferSize: logBufferSize,
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -355,7 +361,7 @@ func readCPU() float64 {
         return float64(cpu_usage)
 }
 
-func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool) func(http.ResponseWriter, *http.Request) {
+func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool, logBufferSize int) func(http.ResponseWriter, *http.Request) {
 	commandName, arguments := watchdogConfig.Process()
 	functionInvoker := executor.HTTPFunctionRunner{
 		ExecTimeout:    watchdogConfig.ExecTimeout,
@@ -363,16 +369,18 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 		ProcessArgs:    arguments,
 		BufferHTTPBody: watchdogConfig.BufferHTTPBody,
 		LogPrefix:      prefixLogs,
+		LogBufferSize:  logBufferSize,
 	}
 
 	if len(watchdogConfig.UpstreamURL) == 0 {
 		log.Fatal(`For "mode=http" you must specify a valid URL for "http_upstream_url"`)
 	}
 
-	urlValue, upstreamURLErr := url.Parse(watchdogConfig.UpstreamURL)
-	if upstreamURLErr != nil {
-		log.Fatal(upstreamURLErr)
+	urlValue, err := url.Parse(watchdogConfig.UpstreamURL)
+	if err != nil {
+		log.Fatal(err)
 	}
+
 	functionInvoker.UpstreamURL = urlValue
 
 	log.Printf("Forking: %s, arguments: %s", commandName, arguments)
@@ -425,6 +433,11 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 		//}
 		log.Printf("[MEMO] %f", max_memo)
 		log.Printf("[CPU] %f", readCPU() - cpu_start)
+
+		if err := functionInvoker.Run(req, r.ContentLength, r, w); err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(err.Error()))
+		}
 	}
 }
 
@@ -458,7 +471,6 @@ func makeHealthHandler() func(http.ResponseWriter, *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte("OK"))
 
-			break
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}

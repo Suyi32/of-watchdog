@@ -4,6 +4,8 @@
 package config
 
 import (
+	"bufio"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -12,10 +14,11 @@ import (
 
 // WatchdogConfig configuration for a watchdog.
 type WatchdogConfig struct {
-	TCPPort          int
-	HTTPReadTimeout  time.Duration
-	HTTPWriteTimeout time.Duration
-	ExecTimeout      time.Duration
+	TCPPort             int
+	HTTPReadTimeout     time.Duration
+	HTTPWriteTimeout    time.Duration
+	ExecTimeout         time.Duration
+	HealthcheckInterval time.Duration
 
 	FunctionProcess  string
 	ContentType      string
@@ -42,6 +45,9 @@ type WatchdogConfig struct {
 	// PrefixLogs adds a date time stamp and the stdio name to any
 	// logging from executing functions
 	PrefixLogs bool
+
+	// LogBufferSize is the size for scanning logs for stdout/stderr
+	LogBufferSize int
 }
 
 // Process returns a string for the process and a slice for the arguments from the FunctionProcess.
@@ -56,7 +62,7 @@ func (w WatchdogConfig) Process() (string, []string) {
 }
 
 // New create config based upon environmental variables.
-func New(env []string) WatchdogConfig {
+func New(env []string) (WatchdogConfig, error) {
 
 	envMap := mapEnv(env)
 
@@ -64,6 +70,8 @@ func New(env []string) WatchdogConfig {
 		functionProcess string
 		upstreamURL     string
 	)
+
+	logBufferSize := bufio.MaxScanTokenSize
 
 	// default behaviour for backwards compatibility
 	prefixLogs := true
@@ -100,29 +108,52 @@ func New(env []string) WatchdogConfig {
 		staticPath = val
 	}
 
-	config := WatchdogConfig{
-		TCPPort:          getInt(envMap, "port", 8080),
-		HTTPReadTimeout:  getDuration(envMap, "read_timeout", time.Second*10),
-		HTTPWriteTimeout: getDuration(envMap, "write_timeout", time.Second*10),
-		FunctionProcess:  functionProcess,
-		StaticPath:       staticPath,
-		InjectCGIHeaders: true,
-		ExecTimeout:      getDuration(envMap, "exec_timeout", time.Second*10),
-		OperationalMode:  ModeStreaming,
-		ContentType:      contentType,
-		SuppressLock:     getBool(envMap, "suppress_lock"),
-		UpstreamURL:      upstreamURL,
-		BufferHTTPBody:   getBools(envMap, "buffer_http", "http_buffer_req_body"),
-		MetricsPort:      8081,
-		MaxInflight:      getInt(envMap, "max_inflight", 0),
-		PrefixLogs:       prefixLogs,
+	writeTimeout := getDuration(envMap, "write_timeout", time.Second*10)
+	healthcheckInterval := writeTimeout
+	if val, exists := envMap["healthcheck_interval"]; exists {
+		healthcheckInterval = parseIntOrDurationValue(val, writeTimeout)
+	}
+
+	if val, exists := envMap["log_buffer_size"]; exists {
+		var err error
+		if logBufferSize, err = strconv.Atoi(val); err != nil {
+			return WatchdogConfig{}, fmt.Errorf("invalid log_buffer_size value: %s, error: %w", val, err)
+		}
+	}
+
+	c := WatchdogConfig{
+		TCPPort:             getInt(envMap, "port", 8080),
+		HTTPReadTimeout:     getDuration(envMap, "read_timeout", time.Second*10),
+		HTTPWriteTimeout:    writeTimeout,
+		HealthcheckInterval: healthcheckInterval,
+		FunctionProcess:     functionProcess,
+		StaticPath:          staticPath,
+		InjectCGIHeaders:    true,
+		ExecTimeout:         getDuration(envMap, "exec_timeout", time.Second*10),
+		OperationalMode:     ModeStreaming,
+		ContentType:         contentType,
+		SuppressLock:        getBool(envMap, "suppress_lock"),
+		UpstreamURL:         upstreamURL,
+		BufferHTTPBody:      getBools(envMap, "buffer_http", "http_buffer_req_body"),
+		MetricsPort:         8081,
+		MaxInflight:         getInt(envMap, "max_inflight", 0),
+		PrefixLogs:          prefixLogs,
+		LogBufferSize:       logBufferSize,
 	}
 
 	if val := envMap["mode"]; len(val) > 0 {
-		config.OperationalMode = WatchdogModeConst(val)
+		c.OperationalMode = WatchdogModeConst(val)
 	}
 
-	return config
+	if writeTimeout == 0 {
+		return c, fmt.Errorf("HTTP write timeout must be over 0s")
+	}
+
+	if len(c.FunctionProcess) == 0 && c.OperationalMode != ModeStatic {
+		return c, fmt.Errorf(`provide a "function_process" or "fprocess" environmental variable for your function`)
+	}
+
+	return c, nil
 }
 
 func mapEnv(env []string) map[string]string {
