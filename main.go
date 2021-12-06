@@ -20,8 +20,11 @@ import (
 	"time"
 	"bufio"
 	"strconv"
-	// "encoding/json"
+	// "bytes"
+	"encoding/json"
+	// "reflect"
 
+	profiler "github.com/Suyi32/FaaSResourceProfiler/profiler"
 	limiter "github.com/openfaas/faas-middleware/concurrency-limiter"
 	"github.com/openfaas/of-watchdog/config"
 	"github.com/openfaas/of-watchdog/executor"
@@ -75,7 +78,8 @@ func main() {
 	httpMetrics := metrics.NewHttp()
 	http.HandleFunc("/", metrics.InstrumentHandler(requestHandler, httpMetrics))
 	http.HandleFunc("/_/health", makeHealthHandler())
-	http.HandleFunc("/_/context", makeContextHandler())
+	resourceProfiler := profiler.NewResourceProfiler() 
+	http.HandleFunc("/_/context", makeContextHandler(requestHandler, resourceProfiler))
 
 	metricsServer := metrics.MetricsServer{}
 	metricsServer.Register(watchdogConfig.MetricsPort)
@@ -190,6 +194,7 @@ func buildRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs bool) 
 		log.Panicf("unknown watchdog mode: %d", watchdogConfig.OperationalMode)
 	}
 
+	log.Printf("MaxInflight: %d", watchdogConfig.MaxInflight)
 	if watchdogConfig.MaxInflight > 0 {
 		return limiter.NewConcurrencyLimiter(requestHandler, watchdogConfig.MaxInflight)
 	}
@@ -310,9 +315,9 @@ func getEnvironment(r *http.Request) []string {
 	return envs
 }
 
-func readMemo() float32 {
-        var memo_usage_in_bytes float32
-        var cache float32
+func readMemo() float64 {
+        var memo_usage_in_bytes float64
+        var cache float64
 
         file, err := os.Open("/sys/fs/cgroup/memory/memory.usage_in_bytes")
         if err !=  nil{
@@ -389,8 +394,8 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		stopCh := make(chan bool)
-		var new_memo float32
-		var max_memo float32
+		var new_memo float64
+		var max_memo float64
 
 		req := executor.FunctionRequest{
 			Process:      commandName,
@@ -434,10 +439,11 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 		log.Printf("[MEMO] %f", max_memo)
 		log.Printf("[CPU] %f", readCPU() - cpu_start)
 
-		if err := functionInvoker.Run(req, r.ContentLength, r, w); err != nil {
-			w.WriteHeader(500)
-			w.Write([]byte(err.Error()))
-		}
+		// if err := functionInvoker.Run(req, r.ContentLength, r, w); err != nil {
+		// 	w.WriteHeader(500)
+		// 	w.Write([]byte(err.Error()))
+		// }
+
 	}
 }
 
@@ -477,32 +483,31 @@ func makeHealthHandler() func(http.ResponseWriter, *http.Request) {
 	}
 }
 
-// type ContextRes struct {
-// 	Inflight int64
-//     CPU      int64
-//     Memo   	 int64
-// }
-
-func makeContextHandler() func(http.ResponseWriter, *http.Request) {
-	// connections := int64(testutil.ToFloat64(httpMetrics.InFlight))
+func makeContextHandler(reqHandler http.Handler, resourceProfiler *profiler.ResourceProfiler) func(http.ResponseWriter, *http.Request) {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			// res_raw := &ContextRes{
-			// 	Inflight: 0,
-			// 	CPU: 1,
-			// 	Memo:2}
-			// res, _ := json.Marshal(res_raw)
-
+			connections := reqHandler.(*limiter.ConcurrencyLimiter).Get()
+			
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			// w.Write([]byte("Context Handler"))
+			// log.Printf("connections in main.handler: %d", connections)
+			res := GetCollocatedContainers()
+			res["InFlight"] = float64(connections)
+			res["CPU"] = resourceProfiler.ReadCPU()
+			res["Memo"] = resourceProfiler.ReadMemo()
 
-			jsonData := []byte(`{"InFlight": 0, "CPU": 1, "Memo": 2}`)
+			jsonData, _ := json.Marshal(res)
+			// responseBody := bytes.NewBuffer(jsonData)
+
+			// res := fmt.Sprintf( "{'InFlight': %d, 'CPU': %f, 'Memo': %f}", connections, resourceProfiler.ReadCPU(), resourceProfiler.ReadMemo() )
+			
+			// jsonData := []byte(`{"InFlight": connections, "CPU": 1, "Memo": 2}`)
+			// jsonData := []byte(res)
 			w.Write(jsonData)
 			// json.NewEncoder(w).Encode(res)
-
 			break
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
