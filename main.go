@@ -79,6 +79,9 @@ func main() {
 	http.HandleFunc("/", metrics.InstrumentHandler(requestHandler, httpMetrics))
 	http.HandleFunc("/_/health", makeHealthHandler())
 	resourceProfiler := profiler.NewResourceProfiler() 
+	go resourceProfiler.ReadCPU_daemon()
+	go resourceProfiler.ReadMemo_daemon()
+	go resourceProfiler.ReadNetwork_daemon()
 	http.HandleFunc("/_/context", makeContextHandler(requestHandler, resourceProfiler))
 
 	metricsServer := metrics.MetricsServer{}
@@ -486,6 +489,11 @@ func makeHealthHandler() func(http.ResponseWriter, *http.Request) {
 func makeContextHandler(reqHandler http.Handler, resourceProfiler *profiler.ResourceProfiler) func(http.ResponseWriter, *http.Request) {
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		type NodeStat struct {
+			NodeRxBytes 	float64
+			NodeTxBytes		float64
+		}
+
 		switch r.Method {
 		case http.MethodGet:
 			connections := reqHandler.(*limiter.ConcurrencyLimiter).Get()
@@ -496,8 +504,25 @@ func makeContextHandler(reqHandler http.Handler, resourceProfiler *profiler.Reso
 			// log.Printf("connections in main.handler: %d", connections)
 			res := GetCollocatedContainers()
 			res["InFlight"] = float64(connections)
-			res["CPU"] = resourceProfiler.ReadCPU()
-			res["Memo"] = resourceProfiler.ReadMemo()
+			res["CPU"] = resourceProfiler.CPUWithLock.ReadCPU()
+			res["Memo"] = resourceProfiler.MemoWithLock.ReadMemo()
+			maxConn, _ := strconv.ParseFloat( os.Getenv("max_inflight"), 64 )
+			res["MaxConn"] = maxConn
+			res["NetRx"] = resourceProfiler.NetWithLock.ReadNetRxBytes()
+			res["NetTx"] = resourceProfiler.NetWithLock.ReadNetTxBytes()
+
+			nodeMonitorResp, err := http.Get("http://172.17.0.1:8090/nodeNet")
+			defer nodeMonitorResp.Body.Close()
+			nodeMonitorBody, err := ioutil.ReadAll(nodeMonitorResp.Body)
+			if err != nil {
+				log.Fatal(err)
+			}
+			var nodeMonitorStruct NodeStat
+			if err := json.Unmarshal(nodeMonitorBody, &nodeMonitorStruct); err != nil {  // Parse []byte to the go struct pointer
+				log.Println("Can not unmarshal JSON")
+			}
+			res["NodeNetRx"] = nodeMonitorStruct.NodeRxBytes
+			res["NodeNetTx"] = nodeMonitorStruct.NodeTxBytes
 
 			jsonData, _ := json.Marshal(res)
 			// responseBody := bytes.NewBuffer(jsonData)
