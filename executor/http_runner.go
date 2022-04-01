@@ -84,7 +84,7 @@ func (f *HTTPFunctionRunner) Start() error {
 }
 
 // Run a function with a long-running process with a HTTP protocol for communication
-func (f *HTTPFunctionRunner) Run(req FunctionRequest, contentLength int64, r *http.Request, w http.ResponseWriter, stopCh chan bool) error {
+func (f *HTTPFunctionRunner) Run(req FunctionRequest, contentLength int64, r *http.Request, w http.ResponseWriter) error {
 	startedTime := time.Now()
 
 	upstreamURL := f.UpstreamURL.String()
@@ -175,8 +175,6 @@ func (f *HTTPFunctionRunner) Run(req FunctionRequest, contentLength int64, r *ht
 	if !strings.HasPrefix(r.UserAgent(), "kube-probe") {
 		log.Printf("%s %s - %s - ContentLength: %d", r.Method, r.RequestURI, res.Status, res.ContentLength)
 	}
-
-	stopCh <- true
 
 	return nil
 }

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	// "log"
 	"os"
 	"context"
 	// "flag"
@@ -38,9 +38,9 @@ func GetCollocatedContainers() map[string]float64 {
 	if err != nil {
 		panic(err.Error())
 	}
-	log.Printf(hostName)
+	// log.Printf(hostName)
 	curPod, _ := clientset.CoreV1().Pods("openfaas-fn").List(context.Background(), metav1.ListOptions{FieldSelector: "metadata.name="+hostName})
-	log.Printf("There are %d pods \n", len(curPod.Items))
+	// log.Printf("There are %d pods \n", len(curPod.Items))
 	nodeName := curPod.Items[0].Spec.NodeName
     pods, err := clientset.CoreV1().Pods("openfaas-fn").List(context.Background(), metav1.ListOptions{FieldSelector: "spec.nodeName="+nodeName})
 	// pods, err := clientset.CoreV1().Pods("openfaas").List(context.Background(), metav1.ListOptions{})
@@ -54,19 +54,20 @@ func GetCollocatedContainers() map[string]float64 {
 	for _, podInfo := range (*pods).Items {
 		// fmt.Printf("pods-name=%v\n", podInfo.Labels["faas_function"])
 		appName = podInfo.Labels["faas_function"]
-		container, ok := collocatedContainers [ appName ]
+		// container, ok := collocatedContainers [ appName ]
+		_, ok := collocatedContainers [ appName ]
 		if ok {
 			collocatedContainers[appName] += 1.0
 		} else {
 			collocatedContainers[appName] = 1.0
 		}
-		log.Printf("pods-name=%v, value=%f", appName, container)
+		// log.Printf("pods-name=%v, value=%f", appName, container)
 		// log.Printf("app-name= %v\n", podInfo.Labels["faas_function"])
 		// fmt.Printf("pods-status=%v\n", podInfo.Status.Phase)
 		// fmt.Printf("pods-condition=%v\n", podInfo.Status.Conditions)
 	}
 
-	log.Printf("There are %d pods in the cluster under openfaas-fn\n", len(pods.Items))
+	// log.Printf("There are %d pods in the cluster under openfaas-fn\n", len(pods.Items))
 
 	return collocatedContainers
 }

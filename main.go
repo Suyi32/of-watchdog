@@ -20,7 +20,7 @@ import (
 	"time"
 	"bufio"
 	"strconv"
-	// "bytes"
+	"bytes"
 	"encoding/json"
 	// "reflect"
 
@@ -82,6 +82,7 @@ func main() {
 	go resourceProfiler.ReadCPU_daemon()
 	go resourceProfiler.ReadMemo_daemon()
 	go resourceProfiler.ReadNetwork_daemon()
+	// go resourceProfiler.ReadPerf_daemon()
 	http.HandleFunc("/_/context", makeContextHandler(requestHandler, resourceProfiler))
 
 	metricsServer := metrics.MetricsServer{}
@@ -396,10 +397,6 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 
 	return func(w http.ResponseWriter, r *http.Request) {
 
-		stopCh := make(chan bool)
-		var new_memo float64
-		var max_memo float64
-
 		req := executor.FunctionRequest{
 			Process:      commandName,
 			ProcessArgs:  arguments,
@@ -411,42 +408,10 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig, prefixLogs boo
 			defer r.Body.Close()
 		}
 
-		cpu_start := readCPU()
-		go func(){
-			err := functionInvoker.Run(req, r.ContentLength, r, w, stopCh)
-			if err != nil {
-				w.WriteHeader(500)
-				w.Write([]byte(err.Error()))
-			}
-		}()
-		//err := go functionInvoker.Run(req, r.ContentLength, r, w, stopCh)
-
-		L:
-			for{
-				select{
-				case _ = <-stopCh:
-					break L
-				default:
-					new_memo = readMemo()
-					if new_memo > max_memo {
-						max_memo = new_memo
-					}
-					time.Sleep(10 * time.Millisecond)
-				}
-			}
-
-		//if err != nil {
-		//	w.WriteHeader(500)
-		//	w.Write([]byte(err.Error()))
-		//}
-		log.Printf("[MEMO] %f", max_memo)
-		log.Printf("[CPU] %f", readCPU() - cpu_start)
-
-		// if err := functionInvoker.Run(req, r.ContentLength, r, w); err != nil {
-		// 	w.WriteHeader(500)
-		// 	w.Write([]byte(err.Error()))
-		// }
-
+		if err := functionInvoker.Run(req, r.ContentLength, r, w); err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(err.Error()))
+		}
 	}
 }
 
@@ -494,6 +459,28 @@ func makeContextHandler(reqHandler http.Handler, resourceProfiler *profiler.Reso
 			NodeTxBytes		float64
 		}
 
+		type PerfReq struct {
+			PodName string
+		}
+		type PerfResp struct {
+			CntnrPerf 	float64
+			NodePerf	float64
+		}
+		podName, err := os.Hostname()
+		if err != nil {
+			panic(err.Error())
+		}
+		reqBody := &PerfReq{
+			PodName:	podName,
+		}
+		reqBodyBuf := new(bytes.Buffer)
+		json.NewEncoder(reqBodyBuf).Encode(reqBody)
+		url := "http://172.17.0.1:8091/perfStat"
+
+		req, _ := http.NewRequest("POST", url, reqBodyBuf)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Custom-Header", "perfReq")
+
 		switch r.Method {
 		case http.MethodGet:
 			connections := reqHandler.(*limiter.ConcurrencyLimiter).Get()
@@ -523,6 +510,23 @@ func makeContextHandler(reqHandler http.Handler, resourceProfiler *profiler.Reso
 			}
 			res["NodeNetRx"] = nodeMonitorStruct.NodeRxBytes
 			res["NodeNetTx"] = nodeMonitorStruct.NodeTxBytes
+
+			client := &http.Client{Timeout: time.Duration(1) * time.Second}
+			perfResp, err := client.Do(req)
+			if err != nil {
+				panic(err)
+			}
+			perfRespBody, err := ioutil.ReadAll(perfResp.Body)
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer perfResp.Body.Close()
+			var perfRespStruct PerfResp
+			if err := json.Unmarshal(perfRespBody, &perfRespStruct); err != nil {  // Parse []byte to the go struct pointer
+				log.Println("Can not unmarshal Perf JSON")
+			}
+			res["PerfCntnr"] = perfRespStruct.CntnrPerf
+			res["PerfNode"]  = perfRespStruct.NodePerf
 
 			jsonData, _ := json.Marshal(res)
 			// responseBody := bytes.NewBuffer(jsonData)

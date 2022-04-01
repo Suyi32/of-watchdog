@@ -29,6 +29,12 @@ type NetLock struct {
     mux     sync.RWMutex
 }
 
+type PerfLock struct {
+    CntnrPerf float64
+	NodePerf  float64
+    mux	      sync.RWMutex
+}
+
 func (cpulock *CPULock) ReadCPU() float64 {
     cpulock.mux.RLock()          // read lock
     var cpu_res = cpulock.CPU
@@ -57,6 +63,20 @@ func (netlock *NetLock) ReadNetRxBytes() float64 {
     return net_res
 }
 
+func (perfLock *PerfLock) ReadPerfCntnr() float64 {
+	perfLock.mux.RLock()          // read lock
+    var perf_res float64 = perfLock.CntnrPerf
+    perfLock.mux.RUnlock()        // read unlock
+    return perf_res
+}
+
+func (perfLock *PerfLock) ReadPerfNode() float64 {
+	perfLock.mux.RLock()          // read lock
+    var perf_res float64 = perfLock.NodePerf
+    perfLock.mux.RUnlock()        // read unlock
+    return perf_res
+}
+
 type ResourceProfiler struct {
     lastCPU float64
     Memo float64
@@ -64,6 +84,7 @@ type ResourceProfiler struct {
 	CPUWithLock 	*CPULock
 	MemoWithLock 	*MemoLock
 	NetWithLock 	*NetLock
+	PerfWithLock	*PerfLock
 }
 
 func (resourceProfiler *ResourceProfiler) ReadCPU() float64 {
@@ -250,5 +271,6 @@ func NewResourceProfiler() *ResourceProfiler {
 		CPUWithLock: &CPULock{},
 		MemoWithLock: &MemoLock{},
 		NetWithLock: &NetLock{},
+		PerfWithLock: &PerfLock{},
 	}
 }

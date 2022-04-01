@@ -4,14 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"sync/atomic"
-	// "net/http/httputil"
-	// "log"
-	// "os"
-	// "context"
-
-	// "k8s.io/client-go/rest"
-	// metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	// "k8s.io/client-go/kubernetes"
 )
 
 type ConcurrencyLimiter struct {
@@ -57,35 +49,6 @@ func (cl *ConcurrencyLimiter) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	completedRequested := atomic.LoadUint64(&cl.requestsCompleted)
 	if requestsStarted-completedRequested > cl.maxInflightRequests {
 		// This is a failure pathway, and we do not want to block on the write to finish
-		// res, err := httputil.DumpRequest(r, true)  
- 		// if err != nil {  
-   		// 	log.Fatal(err)  
-		// }  
-		// log.Printf(string(res))
-		// config, err := rest.InClusterConfig()
-		// if err != nil {
-		// 	panic(err.Error())
-		// }
-		// clientset, err := kubernetes.NewForConfig(config)
-		// if err != nil {
-		// 	panic(err.Error())
-		// }
-		// s, err := clientset.AppsV1().Deployments("openfaas-fn").GetScale(context.TODO(), os.Getenv("fname"), metav1.GetOptions{})
-    	// if err != nil {
-        // 	log.Fatal(err)
-    	// }
-		// sc := *s
-		// log.Printf("Original replica: %d", sc.Spec.Replicas)
-		// sc.Spec.Replicas += 1
-		// // log.Printf("Changed replica (1): %d", *s.Spec.Replicas)
-		// log.Printf("Changed replica: %d", sc.Spec.Replicas)
-		// log.Printf("fname: %s", os.Getenv("fname"))
-		// us, err := clientset.AppsV1().Deployments("openfaas-fn").UpdateScale(context.TODO(),os.Getenv("fname"), &sc, metav1.UpdateOptions{})
-    	// if err != nil {
-        // 	log.Fatal(err)
-    	// }
-		// log.Println(*us)
-
 		atomic.AddUint64(&cl.requestsCompleted, 1)
 		w.WriteHeader(http.StatusTooManyRequests)
 		fmt.Fprintf(w, "Concurrent request limit exceeded. Max concurrent requests: %d\n", cl.maxInflightRequests)
